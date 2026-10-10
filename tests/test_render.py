@@ -73,9 +73,12 @@ class TestRender(unittest.TestCase):
         self.assertGreater(result.pages, 0)
         from pypdf import PdfReader
 
-        box = PdfReader(str(out)).pages[0].mediabox
+        reader = PdfReader(str(out))
+        box = reader.pages[0].mediabox
         self.assertAlmostEqual(float(box.width), 595.5, delta=2.0)
         self.assertAlmostEqual(float(box.height), 842.25, delta=2.0)
+        first = reader.pages[0].extract_text() or ""
+        self.assertNotIn("Page 2", first)
 
     def test_renders_legal_pdf(self):
         out = Path(self.tmp.name) / "out-legal.pdf"
@@ -85,9 +88,14 @@ class TestRender(unittest.TestCase):
         self.assertGreater(result.pages, 0)
         from pypdf import PdfReader
 
-        box = PdfReader(str(out)).pages[0].mediabox
+        reader = PdfReader(str(out))
+        box = reader.pages[0].mediabox
         self.assertAlmostEqual(float(box.width), 612.28, delta=2.0)
         self.assertAlmostEqual(float(box.height), 935.43, delta=2.0)
+        first = reader.pages[0].extract_text() or ""
+        last = reader.pages[-1].extract_text() or ""
+        self.assertNotIn("Page 2", first)
+        self.assertIn("Page 2", last)
 
     def test_no_temp_html_left_behind(self):
         out = Path(self.tmp.name) / "out2.pdf"

@@ -34,8 +34,9 @@ window.__ebir2pdf_err = null;
 try {
   var loader = document.getElementById('loader');
   if (loader) { loader.style.display = 'none'; }
-  document.querySelectorAll('[id^="Page"][id$="Content"]').forEach(function (el) {
+  document.querySelectorAll('[id^="Page"][id$="Content"]').forEach(function (el, idx) {
     el.style.display = 'block';
+    if (idx > 0) { el.style.breakBefore = 'page'; }
   });
   var rdoXml = __RDO_XML__;
   if (rdoXml) {

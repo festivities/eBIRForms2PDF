@@ -129,6 +129,14 @@ limitation unless trivial.
   forms, old-gen 1701 = A4 `@page` + 13in page divs, `printBodyClass` = dead CSS — ground truth
   above corrected). Published   `docs/paper-sizes.md` (84 rows, generated from the scan JSON in
   scratch) + a README "Designed paper sizes" section. No renderer change needed.
+- 2026-10-10: Legal-size page-2 header bled onto page 1 (verified in user's screenshots +
+  painted-extent analysis). Root cause: templates declare zero page-break rules; A4 only worked
+  because page-1 content exactly fills the shorter sheet. Fix: fill script now sets
+  `break-before: page` on every `Page*Content` div after the first (no-op when already at a
+  sheet top, so A4 is unaffected). Verified: legal page-1 bottom strip went 4389→0 dark pixels,
+  header back on page 2, 2pp, symmetric gaps; A4 unchanged. Regression tests assert "Page 2"
+  placement on both papers (proven to FAIL with the fix disabled). 34/34, ruff clean.
+  Uncommitted (user did not ask for a commit).
 - 2026-10-10: tkinter GUI + frozen exes, all as main agent per user request. `gui.py` (threaded
   export, queue-polled log/progress), `launch_gui.py`/`launch_cli.py` PyInstaller shims,
   `build_exe.bat` one-click (both exes, `--collect-all playwright`; `*.spec` gitignored).

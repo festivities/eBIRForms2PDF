@@ -22,6 +22,7 @@ class EbirApp(tk.Tk):
         self.minsize(660, 540)
         self.root_dir = find_install_root()
         self.entries = []
+        self.visible = []
         self.named_dir = None
         self.queue = queue.Queue()
         self.busy = False
@@ -54,6 +55,13 @@ class EbirApp(tk.Tk):
         side.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0))
         ttk.Button(side, text="Select all", command=self.select_all).pack(fill=tk.X)
         ttk.Button(side, text="Clear", command=self.select_none).pack(fill=tk.X, pady=4)
+        self.show_encrypted_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            side,
+            text="Show encrypted",
+            variable=self.show_encrypted_var,
+            command=self._refresh_list,
+        ).pack(fill=tk.X)
 
         opts = ttk.Frame(self, padding=8)
         opts.pack(fill=tk.X)
@@ -127,21 +135,28 @@ class EbirApp(tk.Tk):
             messagebox.showerror("Templates", f"Template extraction failed: {exc}")
             return
         self.load_entries(scan(self.root_dir))
-        self.status_var.set(f"{len(self.entries)} form(s) found.")
 
     def load_entries(self, entries):
         self.entries = list(entries)
+        self._refresh_list()
+
+    def _refresh_list(self):
+        show = self.show_encrypted_var.get()
+        self.visible = [e for e in self.entries if show or not e.encrypted]
         self.listbox.delete(0, tk.END)
-        for entry in self.entries:
+        for entry in self.visible:
             marker = "  [encrypted - not exportable]" if entry.encrypted else ""
             self.listbox.insert(
                 tk.END, f"{entry.form_code}  {entry.period}  {entry.filename}{marker}"
             )
+        hidden = len(self.entries) - len(self.visible)
+        extra = f" ({hidden} encrypted hidden)" if hidden else ""
+        self.status_var.set(f"{len(self.visible)} form(s) shown{extra}.")
 
     def start_export(self):
         if self.busy:
             return
-        picked = [self.entries[i] for i in self.listbox.curselection()]
+        picked = [self.visible[i] for i in self.listbox.curselection()]
         if not picked:
             messagebox.showwarning("Nothing selected", "Select at least one form to export.")
             return

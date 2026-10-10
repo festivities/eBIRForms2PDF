@@ -36,6 +36,32 @@ class TestOutputName(unittest.TestCase):
 
 @unittest.skipUnless(_display_available(), "no display")
 class TestGui(unittest.TestCase):
+    def test_encrypted_hidden_by_default(self):
+        from ebirforms2pdf import gui
+
+        app = gui.EbirApp(auto_load=False)
+        try:
+            app.load_entries(
+                [
+                    FormEntry(
+                        Path("a.xml"), "1701Qv2018", "2026Q3", False, 10, 0.0,
+                        "111111111-1701Qv2018-2026Q3.xml",
+                    ),
+                    FormEntry(
+                        Path("b.xml"), "1701Qv2018", "2026Q3", True, 10, 0.0,
+                        "111111111-1701Qv2018-2026Q3#user@example.com#.xml",
+                    ),
+                ]
+            )
+            self.assertFalse(app.show_encrypted_var.get())
+            self.assertEqual(app.listbox.size(), 1)
+            self.assertIn("encrypted hidden", app.status_var.get())
+            app.show_encrypted_var.set(True)
+            app._refresh_list()
+            self.assertEqual(app.listbox.size(), 2)
+        finally:
+            app.destroy()
+
     def test_export_flow(self):
         from ebirforms2pdf import gui
 

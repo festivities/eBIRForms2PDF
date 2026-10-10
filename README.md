@@ -51,6 +51,23 @@ legal files get a `-legal` filename suffix), `--version`.
 
 Encrypted final copies (`IAF_*_Copy` / `IAF_*_Archive`) are listed but cannot be exported.
 
+Desktop app (checkboxes instead of typed numbers, progress bar, result log):
+
+```
+.venv\Scripts\ebirforms2pdf-gui
+```
+
+Self-contained Windows executables — no Python needed on the target machine, but
+Microsoft Edge or Google Chrome must be installed (rendering engine):
+
+```
+build_exe.bat
+```
+
+Double-click it (or run it from a terminal). It produces `dist\eBIRForms2PDF.exe`
+(desktop app) and `dist\ebirforms2pdf-cli.exe` (the same command line). Windows
+SmartScreen may flag the fresh binaries on first run ("More info" → "Run anyway").
+
 ## Designed paper sizes
 
 BIR's templates target different papers, which is exactly why the app's print-to-PDF clips on
@@ -94,5 +111,3 @@ No personal data is stored in this repository.
 ## License
 
 GPLv3 — see [LICENSE](LICENSE).
-
-Copyright (C) 2026 eBIRForms2PDF contributors.

@@ -69,10 +69,17 @@ install dir), `draft.py` (pseudo-XML → ordered values dict; JS-unescape; never
 `render.py` (copy `forms\BIR-Form<segment2>.hta` → injected `.html` (Chromium won't render `.hta`),
 append script setting values by id + `checked` for true/false, print via Playwright Chromium —
 prefer `channel="msedge"` then `"chrome"`, no browser download unless both missing — `page.pdf`
-A4, `print_background=True`, computed scale-to-fit (per-page-height cap from `Page*Content`
+with explicit mm dimensions: **A4 210×297 default, Philippine legal 215.9×330.2 via `--paper
+legal`** (`PAPER_SIZES_MM`; output gets a `-legal` filename suffix), `print_background=True`, computed scale-to-fit (per-page-height cap from `Page*Content`
 divs, width fit, 0.90 fallback; auto-retry lower scale if PDF page count exceeds the draft's
 `txtMaxPage`)), CLI (`__main__.py`: interactive picker `1,3-5`/`all`, `--list`,
-`--all`, `--out`, `--root`, `--cache`). Deps: `pefile`, `playwright`, `pypdf` (all runtime).
+`--all`, `--out`, `--root`, `--cache`, `--paper {a4,legal}`), desktop GUI (`gui.py`: tkinter
+`EbirApp` — folder picker, multi-select list, paper radios, out-dir picker, threaded export
+with progress/log; entry `ebirforms2pdf-gui`), frozen builds (`build_exe.bat` one-click:
+PyInstaller `--onefile --collect-all playwright` → `dist\eBIRForms2PDF.exe` (windowed GUI)
++ `dist\ebirforms2pdf-cli.exe` via `launch_gui.py`/`launch_cli.py` shims — required because
+direct-script builds break the package's relative imports; needs Edge/Chrome on target).
+Deps: `pefile`, `playwright`, `pypdf` (all runtime).
 Render specifics: injected fill script appended at end-of-document (templates define functions
 after `</body>`); script un-hides `Page*Content` divs, hides `#loader`, pre-seeds RDO `<select>`s
 from `xml/rdo.xml` via the form's own `loadRdo()`/`getRdo()` (dead ActiveX in Chromium),
@@ -110,8 +117,23 @@ limitation unless trivial.
   root-rect shift to x=0, fixed-point viewport iteration, and symmetric margins. Re-verified:
   painted left/right gaps ≈ 10–13pt on both pages (centered, ~0.7mm asymmetry), no negative
   gaps, 2/2 pages, fills present, 29/29 tests, ruff clean.
+- 2026-10-10: `--paper {a4,legal}` implemented + verified by main agent (legal: 2pp, symmetric
+  gaps, mediabox ≈ 612×935pt, scale 0.856; suite now 30 tests incl. legal mediabox test, ruff
+  clean). README gained a Tested-forms table (only 1701Qv2018 user-verified). License switched
+  MIT → GPLv3 (canonical text from SPDX mirror — gnu.org was unreachable from this network;
+  pyproject `GPL-3.0-or-later`, deps are GPL-compatible). Privacy sweep clean (no TIN/email in
+  repo; test fixtures synthetic). Remote set to `git@github.com:festivities/eBIRForms2PDF.git`,
+  first commit `e46267d` force-pushed to master at user request.
 - 2026-10-10: Paper-size survey delegated to @general and VERIFIED by main agent (12/84 `@page`
   file list, 2200Pv2020 = 8.5×14, 2550Qv2024 = clean A4, dual Legal/A4 alert pattern in v2018
   forms, old-gen 1701 = A4 `@page` + 13in page divs, `printBodyClass` = dead CSS — ground truth
-  above corrected). Published `docs/paper-sizes.md` (84 rows, generated from the scan JSON in
+  above corrected). Published   `docs/paper-sizes.md` (84 rows, generated from the scan JSON in
   scratch) + a README "Designed paper sizes" section. No renderer change needed.
+- 2026-10-10: tkinter GUI + frozen exes, all as main agent per user request. `gui.py` (threaded
+  export, queue-polled log/progress), `launch_gui.py`/`launch_cli.py` PyInstaller shims,
+  `build_exe.bat` one-click (both exes, `--collect-all playwright`; `*.spec` gitignored).
+  Verified: 33/33 tests (incl. headful GUI export-flow with mocked renderer + legal-mediabox
+  test), ruff clean; frozen CLI exe lists + exports real draft end-to-end (2pp A4);
+  `eBIRForms2PDF.exe` confirmed live with main window "eBIRForms2PDF 0.1.0" via tasklist +
+  MainWindowTitle check. README gained Desktop-app/exe section; `ebirforms2pdf-gui` entry added.
+  Privacy: new files contain no personal data (synthetic fixtures only).

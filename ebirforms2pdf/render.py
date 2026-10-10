@@ -201,6 +201,12 @@ def _count_pdf_pages(pdf_path):
     return len(PdfReader(str(pdf_path)).pages)
 
 
+def output_pdf_name(filename, paper="a4"):
+    """Output filename for a draft: '<stem>.pdf', or '<stem>-legal.pdf' for legal."""
+    stem = filename[:-4] if filename.lower().endswith(".xml") else filename
+    return f"{stem}.pdf" if paper == "a4" else f"{stem}-legal.pdf"
+
+
 def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
     """Fill entry's form template with the draft and write a fitted PDF."""
     try:

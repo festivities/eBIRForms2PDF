@@ -8,7 +8,7 @@ from . import __version__
 from .extract import ExtractError, extract_templates
 from .finder import FormEntry, looks_like_draft, parse_filename, scan
 from .locator import find_install_root
-from .render import export_pdf
+from .render import export_pdf, output_pdf_name
 
 
 def _parse_args(argv):
@@ -104,8 +104,7 @@ def _prompt(message, default):
 def _do_exports(entries, out_dir, named_dir, paper):
     successes = 0
     for entry in entries:
-        stem = entry.filename[:-4]
-        target = out_dir / (f"{stem}.pdf" if paper == "a4" else f"{stem}-legal.pdf")
+        target = out_dir / output_pdf_name(entry.filename, paper)
         if entry.encrypted:
             print(f"SKIP {entry.filename}: not exportable (encrypted final copy)")
             continue

@@ -8,6 +8,7 @@ import pefile
 RT_HTML = 23
 MANIFEST_ID = 129
 XOR_TABLE = bytes(i ^ 0xFF for i in range(256))
+COMPLETE_MARKER = ".complete"
 
 
 class ExtractError(Exception):
@@ -49,20 +50,27 @@ def _collect_resources(pe):
 
 def _safe_dest(named_dir, rel_path):
     pure = PureWindowsPath(rel_path.strip())
-    if pure.is_absolute() or ".." in pure.parts or not pure.parts:
+    if pure.anchor or ".." in pure.parts or not pure.parts:
         return None
     return named_dir.joinpath(*pure.parts)
 
 
 def extract_templates(exe_path, cache_base=None):
     """Decode all RT_HTML resources into cache_base/<key>/named and return that dir."""
-    exe = Path(exe_path)
+    try:
+        return _extract_templates(Path(exe_path), cache_base)
+    except (pefile.PEFormatError, UnicodeDecodeError, OSError) as exc:
+        raise ExtractError(f"could not extract templates: {exc}") from exc
+
+
+def _extract_templates(exe, cache_base):
     if not exe.is_file():
         raise ExtractError(f"BIRForms.exe not found: {exe}")
     base = Path(cache_base) if cache_base else default_cache_base()
     stat = exe.stat()
     named_dir = base / f"{stat.st_size}-{int(stat.st_mtime)}" / "named"
-    if (named_dir / "BIRForms.hta").is_file():
+    marker = named_dir / COMPLETE_MARKER
+    if marker.is_file():
         return named_dir
     pe = pefile.PE(str(exe), fast_load=True)
     try:
@@ -87,4 +95,5 @@ def extract_templates(exe_path, cache_base=None):
         pe.close()
     if not (named_dir / "BIRForms.hta").is_file():
         raise ExtractError("template extraction produced no BIRForms.hta")
+    marker.touch()
     return named_dir

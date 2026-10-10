@@ -7,10 +7,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
-from .extract import ExtractError, extract_templates
+from .extract import extract_templates
 from .finder import scan
 from .locator import find_install_root, is_install_root
-from .render import PAPER_SIZES_MM, export_pdf, output_pdf_name
+from .render import PAPER_SIZES_MM, export_many
 
 
 class EbirApp(tk.Tk):
@@ -26,10 +26,12 @@ class EbirApp(tk.Tk):
         self.named_dir = None
         self.queue = queue.Queue()
         self.busy = False
+        self._poll_id = None
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         if auto_load:
             self.refresh_forms()
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
 
     def _build(self):
         top = ttk.Frame(self, padding=8)
@@ -39,10 +41,10 @@ class EbirApp(tk.Tk):
         ttk.Entry(top, textvariable=self.root_var).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=6
         )
-        ttk.Button(top, text="Change...", command=self.change_root).pack(side=tk.LEFT)
-        ttk.Button(top, text="Rescan", command=self.refresh_forms).pack(
-            side=tk.LEFT, padx=(6, 0)
-        )
+        self.change_btn = ttk.Button(top, text="Change...", command=self.change_root)
+        self.change_btn.pack(side=tk.LEFT)
+        self.rescan_btn = ttk.Button(top, text="Rescan", command=self.refresh_forms)
+        self.rescan_btn.pack(side=tk.LEFT, padx=(6, 0))
 
         mid = ttk.Frame(self, padding=(8, 0))
         mid.pack(fill=tk.BOTH, expand=True)
@@ -97,18 +99,17 @@ class EbirApp(tk.Tk):
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
 
+    def _set_busy(self, busy):
+        self.busy = busy
+        state = tk.DISABLED if busy else tk.NORMAL
+        for button in (self.change_btn, self.rescan_btn, self.export_btn):
+            button.configure(state=state)
+
     def change_root(self):
         picked = filedialog.askdirectory(title="eBIRForms install folder")
-        if not picked:
-            return
-        if not is_install_root(picked):
-            messagebox.showwarning(
-                "Not an install", "That folder has no BIRForms.exe + savefile."
-            )
-            return
-        self.root_dir = Path(picked)
-        self.root_var.set(str(self.root_dir))
-        self.refresh_forms()
+        if picked:
+            self.root_var.set(picked)
+            self.refresh_forms()
 
     def browse_out(self):
         picked = filedialog.askdirectory(title="Output folder")
@@ -122,19 +123,34 @@ class EbirApp(tk.Tk):
         self.listbox.selection_clear(0, tk.END)
 
     def refresh_forms(self):
-        if not self.root_dir:
+        if self.busy:
+            return
+        typed = self.root_var.get().strip().strip("\"'")
+        folder = Path(typed) if typed else None
+        if folder is None or not is_install_root(folder):
+            self._clear_forms()
             messagebox.showwarning(
-                "Not found", "eBIRForms installation not found. Use Change... to point at it."
+                "Not an install",
+                "That folder has no BIRForms.exe + savefile. Type the eBIRForms folder"
+                " above or use Change...",
             )
             return
+        self._set_busy(True)
         self.status_var.set("Loading templates...")
-        self.update_idletasks()
+        threading.Thread(target=self._load, args=(folder,), daemon=True).start()
+
+    def _load(self, folder):
+        result = ("load_failed", "Could not load forms: unknown error")
         try:
-            self.named_dir = extract_templates(self.root_dir / "BIRForms.exe")
-        except ExtractError as exc:
-            messagebox.showerror("Templates", f"Template extraction failed: {exc}")
-            return
-        self.load_entries(scan(self.root_dir))
+            result = ("loaded", extract_templates(folder / "BIRForms.exe"), scan(folder))
+        except Exception as exc:
+            result = ("load_failed", f"Could not load forms: {exc}")
+        finally:
+            self.queue.put(result)
+
+    def _clear_forms(self):
+        self.named_dir = None
+        self.load_entries([])
 
     def load_entries(self, entries):
         self.entries = list(entries)
@@ -166,8 +182,7 @@ class EbirApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Output folder", f"Cannot use that folder: {exc}")
             return
-        self.busy = True
-        self.export_btn.configure(state=tk.DISABLED)
+        self._set_busy(True)
         self.progress.configure(maximum=len(picked), value=0)
         self.status_var.set(f"Exporting {len(picked)} form(s)...")
         thread = threading.Thread(
@@ -179,30 +194,17 @@ class EbirApp(tk.Tk):
 
     def _run_exports(self, picked, out_dir, named_dir, paper):
         done = 0
-        for entry in picked:
-            if entry.encrypted:
-                self.queue.put(
-                    ("row", f"SKIP {entry.filename}: not exportable (encrypted final copy)")
-                )
-            else:
-                try:
-                    target = out_dir / output_pdf_name(entry.filename, paper)
-                    result = export_pdf(entry, entry.path, named_dir, target, paper)
-                    pages = result.pages if result.pages > 0 else "?"
-                    self.queue.put(
-                        (
-                            "row",
-                            f"OK {entry.filename} -> {target} "
-                            f"({pages} pages, scale {result.scale:.3f})",
-                        )
-                    )
+        try:
+            for status, line in export_many(picked, out_dir, named_dir, paper):
+                if status == "OK":
                     done += 1
-                except Exception as exc:
-                    self.queue.put(("row", f"ERROR {entry.filename}: {exc}"))
-            self.queue.put(("step", None))
-        self.queue.put(("done", done, len(picked)))
+                self.queue.put(("row", line))
+                self.queue.put(("step", None))
+        finally:
+            self.queue.put(("done", done, len(picked)))
 
     def _poll(self):
+        self._poll_id = None
         try:
             while True:
                 kind, *payload = self.queue.get_nowait()
@@ -212,12 +214,33 @@ class EbirApp(tk.Tk):
                     self.progress.step(1)
                 elif kind == "done":
                     ok, total = payload
-                    self.busy = False
-                    self.export_btn.configure(state=tk.NORMAL)
+                    self._set_busy(False)
                     self.status_var.set(f"Done: {ok}/{total} exported.")
+                elif kind == "loaded":
+                    self.named_dir = payload[0]
+                    self._set_busy(False)
+                    self.load_entries(payload[1])
+                elif kind == "load_failed":
+                    self._set_busy(False)
+                    self._clear_forms()
+                    messagebox.showerror("Templates", payload[0])
         except queue.Empty:
             pass
-        self.after(100, self._poll)
+        finally:
+            self._poll_id = self.after(100, self._poll)
+
+    def _on_close(self):
+        if self.busy and not messagebox.askyesno(
+            "Busy", "A load or export is still running. Close anyway?"
+        ):
+            return
+        self.destroy()
+
+    def destroy(self):
+        if self._poll_id is not None:
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
+        super().destroy()
 
 
 def main():

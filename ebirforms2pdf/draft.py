@@ -4,25 +4,19 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .finder import parse_filename
-
 _DIV_RE = re.compile(r"<div>(.*?)</div>", re.DOTALL)
-_UNICODE_ESCAPE_RE = re.compile(r"%u([0-9A-Fa-f]{4})")
-_BYTE_ESCAPE_RE = re.compile(r"%([0-9A-Fa-f]{2})")
+_ESCAPE_RE = re.compile(r"%u([0-9A-Fa-f]{4})|%([0-9A-Fa-f]{2})")
 
 
 @dataclass
 class DraftMeta:
-    form_code: str
-    period: str
-    tin: str
     max_page: int | None
 
 
 def js_unescape(text):
-    """Unescape JS escape() output: %uXXXX and %XX; '+' stays literal."""
-    text = _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
-    return _BYTE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+    """Unescape JS escape() output in one pass (%uXXXX, %XX); '+' stays literal."""
+    text = _ESCAPE_RE.sub(lambda m: chr(int(m.group(1) or m.group(2), 16)), text)
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
 
 
 def _split_line(line):
@@ -68,15 +62,4 @@ def parse_draft(path):
             values[control_id] += "\n" + value
         else:
             values[control_id] = value
-    parsed = parse_filename(Path(path).name)
-    stem = Path(path).name
-    if stem.lower().endswith(".xml"):
-        stem = stem[:-4]
-    tin = stem.split("-", 1)[0] if stem.split("-", 1)[0].isdigit() else ""
-    meta = DraftMeta(
-        form_code=parsed[1] if parsed else "",
-        period=parsed[2] if parsed else "",
-        tin=tin,
-        max_page=_find_max_page(values),
-    )
-    return meta, values
+    return DraftMeta(max_page=_find_max_page(values)), values

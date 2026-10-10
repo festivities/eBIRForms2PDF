@@ -4,10 +4,12 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from pypdf import PdfReader
 
 from .draft import parse_draft
 
@@ -15,9 +17,10 @@ MARGIN_MM = 4
 PAPER_SIZES_MM = {"a4": (210, 297), "legal": (215.9, 330.2)}
 SCALE_CAP = 0.90
 MAX_CALIBRATION_ATTEMPTS = 3
+STALE_RENDER_SECONDS = 60 * 60
 _VIEWPORT_MAX = 2400
 
-_FILL_SCRIPT_TEMPLATE = r"""
+_FILL_SCRIPT = r"""
 window.alert = function () {};
 window.confirm = function () { return false; };
 window.sleeptime = function () {};
@@ -38,7 +41,7 @@ try {
     el.style.display = 'block';
     if (idx > 0) { el.style.breakBefore = 'page'; }
   });
-  var rdoXml = __RDO_XML__;
+  var rdoXml = window.__ebir2pdf_rdo;
   if (rdoXml) {
     var responseRdo = document.getElementById('responseRdo');
     if (responseRdo && typeof loadRdo === 'function' && typeof rdoList !== 'undefined'
@@ -48,7 +51,7 @@ try {
       if (typeof getRdo === 'function') { try { getRdo(); } catch (e) {} }
     }
   }
-  var values = __VALUES__;
+  var values = window.__ebir2pdf_values || {};
   Object.keys(values).forEach(function (key) {
     if (!key) { return; }
     var val = String(values[key]);
@@ -82,7 +85,7 @@ try {
     s.style.display = 'none';
     s.insertAdjacentElement('afterend', label);
   });
-} catch (e) { window.__ebir2pdf_err = String(e); }
+} catch (e) { window.__ebir2pdf_err = (e && e.name) || 'error'; }
 """
 
 _ROOT_WIDTH_SCRIPT = r"""
@@ -130,6 +133,7 @@ class RenderResult:
     scale: float
     unfilled_count: int
     paper: str
+    warnings: list[str] = field(default_factory=list)
 
 
 class RenderError(Exception):
@@ -167,51 +171,60 @@ def _read_rdo_xml(named_dir):
         return None
 
 
-def _json_safe(obj):
-    return json.dumps(obj).replace("<", "\\u003c").replace(">", "\\u003e")
+def _init_script(values, rdo_xml):
+    """Values never touch the HTML file: they are injected into the page before its scripts run."""
+    kept = {key: val for key, val in values.items() if not key.startswith("ebirOnline")}
+    return (
+        f"window.__ebir2pdf_values = {json.dumps(kept)};"
+        f" window.__ebir2pdf_rdo = {json.dumps(rdo_xml or '')};"
+    )
 
 
 def _build_html(template_path, values, rdo_xml):
-    """Append the fill script at the very end: templates define functions after </body>."""
+    """Return (html bytes, init script). The fill script is appended at the very end because
+    templates define functions after </body>."""
     raw = template_path.read_bytes()
-    script = _FILL_SCRIPT_TEMPLATE.replace("__VALUES__", _json_safe(values))
-    script = script.replace("__RDO_XML__", _json_safe(rdo_xml or ""))
-    return raw + b"<script>" + script.encode("utf-8") + b"</script>"
+    html = raw + b"<script>" + _FILL_SCRIPT.encode("utf-8") + b"</script>"
+    return html, _init_script(values, rdo_xml)
+
+
+def _first_line(exc):
+    lines = str(exc).strip().splitlines()
+    return lines[0] if lines else type(exc).__name__
 
 
 def _launch(context):
+    errors = []
     for channel in ("msedge", "chrome"):
         try:
             return context.chromium.launch(channel=channel)
-        except Exception:
-            continue
+        except Exception as exc:
+            errors.append(f"{channel}: {_first_line(exc)}")
     try:
         return context.chromium.launch()
     except Exception as exc:
         raise RenderError(
             "no Chromium-based browser found; install Microsoft Edge or Google Chrome,"
-            " or run: python -m playwright install chromium"
+            " or run: python -m playwright install chromium; launch errors: "
+            + "; ".join(errors)
         ) from exc
 
 
 def _count_pdf_pages(pdf_path):
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        return None
     return len(PdfReader(str(pdf_path)).pages)
 
 
 def output_pdf_name(filename, paper="a4"):
     """Output filename for a draft: '<stem>.pdf', or '<stem>-legal.pdf' for legal."""
     stem = filename[:-4] if filename.lower().endswith(".xml") else filename
-    return f"{stem}.pdf" if paper == "a4" else f"{stem}-legal.pdf"
+    return f"{stem}.pdf" if paper.lower() == "a4" else f"{stem}-legal.pdf"
 
 
 def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
     """Fill entry's form template with the draft and write a fitted PDF."""
     try:
-        paper_w_mm, paper_h_mm = PAPER_SIZES_MM[paper.lower()]
+        paper = paper.lower()
+        paper_w_mm, paper_h_mm = PAPER_SIZES_MM[paper]
     except (KeyError, AttributeError) as exc:
         raise RenderError(
             f"unknown paper size '{paper}' (choose from {sorted(PAPER_SIZES_MM)})"
@@ -223,17 +236,22 @@ def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
     temp_html = template_dir / f"_ebir2pdf_render_{os.getpid()}.html"
     out_pdf_path = Path(out_pdf_path)
     out_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    html, init_script = _build_html(template, values, rdo_xml)
+    cutoff = time.time() - STALE_RENDER_SECONDS
     for stale in template_dir.glob("_ebir2pdf_render_*.html"):
         try:
-            stale.unlink()
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
         except OSError:
             pass
-    temp_html.write_bytes(_build_html(template, values, rdo_xml))
+    expected = meta.max_page if meta.max_page and meta.max_page > 0 else None
     try:
+        temp_html.write_bytes(html)
         with sync_playwright() as context:
             browser = _launch(context)
             try:
                 page = browser.new_page()
+                page.add_init_script(init_script)
                 page.on("dialog", lambda dialog: dialog.dismiss())
                 page.goto(temp_html.as_uri())
                 page.wait_for_load_state("networkidle")
@@ -242,11 +260,26 @@ def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
                 if isinstance(root_w, (int, float)) and 0 < root_w <= _VIEWPORT_MAX:
                     page.set_viewport_size({"width": math.ceil(root_w), "height": 900})
                 page.emulate_media(media="print")
-                unfilled = page.evaluate(
-                    "window.__ebir2pdf_unfilled ? window.__ebir2pdf_unfilled.length : -1"
+                state = page.evaluate(
+                    "({unfilled: window.__ebir2pdf_unfilled || null,"
+                    " error: window.__ebir2pdf_err || null})"
                 )
-                if not isinstance(unfilled, int):
-                    unfilled = -1
+                warnings = []
+                if state["unfilled"] is None:
+                    unfilled_count = -1
+                    warnings.append("fill script did not run; draft values were not applied")
+                else:
+                    missing = [key for key in state["unfilled"] if key.startswith("frm")]
+                    unfilled_count = len(missing)
+                    if missing:
+                        warnings.append(
+                            f"{len(missing)} draft field(s) matched no form control: "
+                            + ", ".join(missing[:5])
+                        )
+                if state["error"]:
+                    warnings.append(
+                        f"fill script failed ({state['error']}); output may be incomplete"
+                    )
                 scale = 0.0
                 width_mm = 0.0
                 for _ in range(3):
@@ -270,17 +303,18 @@ def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
                     if viewport_w <= 0 or viewport_w > _VIEWPORT_MAX:
                         break
                     page.set_viewport_size({"width": math.ceil(viewport_w), "height": 900})
-                pages = None
-                attempts = 0
-                while True:
-                    leftover = max(0.0, (paper_w_mm - 2 * MARGIN_MM) - width_mm * scale)
+                if width_mm <= 0:
+                    warnings.append("measured page width is 0; width fit not applied")
+
+                def print_at(fit_scale):
+                    leftover = max(0.0, (paper_w_mm - 2 * MARGIN_MM) - width_mm * fit_scale)
                     side = MARGIN_MM + leftover / 2
                     page.pdf(
                         path=str(out_pdf_path),
                         width=f"{paper_w_mm}mm",
                         height=f"{paper_h_mm}mm",
                         print_background=True,
-                        scale=scale,
+                        scale=fit_scale,
                         margin={
                             "top": f"{MARGIN_MM}mm",
                             "bottom": f"{MARGIN_MM}mm",
@@ -289,23 +323,29 @@ def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
                         },
                         prefer_css_page_size=False,
                     )
-                    pages = _count_pdf_pages(out_pdf_path)
-                    if (
-                        pages is None
-                        or meta.max_page is None
-                        or pages <= meta.max_page
-                        or attempts >= MAX_CALIBRATION_ATTEMPTS
-                    ):
+                    return _count_pdf_pages(out_pdf_path)
+
+                pages = print_at(scale)
+                for _ in range(MAX_CALIBRATION_ATTEMPTS):
+                    if expected is None or pages <= expected:
                         break
-                    scale = max(0.1, scale * meta.max_page / pages)
-                    attempts += 1
+                    previous = out_pdf_path.read_bytes()
+                    retry_scale = scale * expected / pages
+                    retry_pages = print_at(retry_scale)
+                    if retry_pages >= pages:
+                        out_pdf_path.write_bytes(previous)
+                        break
+                    scale, pages = retry_scale, retry_pages
+                if expected is not None and pages != expected:
+                    warnings.append(f"PDF has {pages} page(s); draft expects {expected}")
                 return RenderResult(
                     pdf_path=out_pdf_path,
-                    pages=pages if pages is not None else -1,
-                    expected_pages=meta.max_page,
+                    pages=pages,
+                    expected_pages=expected,
                     scale=scale,
-                    unfilled_count=unfilled,
+                    unfilled_count=unfilled_count,
                     paper=paper,
+                    warnings=warnings,
                 )
             finally:
                 browser.close()
@@ -314,3 +354,31 @@ def export_pdf(entry, draft_path, template_named_dir, out_pdf_path, paper="a4"):
             temp_html.unlink()
         except OSError:
             pass
+
+
+def export_many(entries, out_dir, named_dir, paper="a4"):
+    """Yield (status, line) per entry; status is OK, SKIP or ERROR. Names are unique per run."""
+    out_dir = Path(out_dir)
+    used = set()
+    for entry in entries:
+        if entry.encrypted:
+            yield "SKIP", f"SKIP {entry.filename}: not exportable (encrypted final copy)"
+            continue
+        base = output_pdf_name(entry.filename, paper)
+        name, number = base, 1
+        while name.lower() in used:
+            number += 1
+            name = f"{base[:-4]}-{number}.pdf"
+        used.add(name.lower())
+        target = out_dir / name
+        try:
+            result = export_pdf(entry, entry.path, named_dir, target, paper)
+            pages = result.pages if result.pages > 0 else "?"
+            summary = f"({result.paper}, {pages} pages, scale {result.scale:.3f})"
+            lines = [f"OK {entry.filename} -> {target} {summary}"]
+            lines += [f"  WARNING: {warning}" for warning in result.warnings]
+        except Exception as exc:
+            message = " ".join(str(exc).split())
+            yield "ERROR", f"ERROR {entry.filename}: {type(exc).__name__}: {message}"
+            continue
+        yield "OK", "\n".join(lines)

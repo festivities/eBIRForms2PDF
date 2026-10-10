@@ -33,6 +33,17 @@ class TestJsUnescape(unittest.TestCase):
     def test_mixed(self):
         self.assertEqual(js_unescape("%u0041x%42"), "AxB")
 
+    def test_single_pass_no_double_decode(self):
+        self.assertEqual(js_unescape("%u002541"), "%41")
+
+    def test_surrogate_pair_combined(self):
+        self.assertEqual(js_unescape("%uD83D%uDE00"), "\U0001f600")
+
+    def test_malformed_left_as_is(self):
+        for text in ("%u12", "%ZZ", "100%"):
+            with self.subTest(text=text):
+                self.assertEqual(js_unescape(text), text)
+
 
 class TestParseDraft(unittest.TestCase):
     def setUp(self):
@@ -54,12 +65,6 @@ class TestParseDraft(unittest.TestCase):
     def test_boolean_passthrough(self):
         _, values = parse_draft(self.path)
         self.assertEqual(values["frm1701q:chkFinal"], "false")
-
-    def test_meta(self):
-        meta, _ = parse_draft(self.path)
-        self.assertEqual(meta.form_code, "1701Qv2018")
-        self.assertEqual(meta.period, "2026Q3")
-        self.assertEqual(meta.tin, "123456789001")
 
     def test_max_page_suffix_match(self):
         meta, _ = parse_draft(self.path)

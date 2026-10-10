@@ -12,14 +12,9 @@ _UNINSTALL_KEY = (
 def _registry_candidates():
     paths = [
         (_UNINSTALL_KEY, winreg.KEY_WOW64_64KEY),
-        (_UNINSTALL_KEY, winreg.KEY_WOW64_32KEY),
         (
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\eBIRForms_is1",
             winreg.KEY_WOW64_32KEY,
-        ),
-        (
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\eBIRForms_is1",
-            winreg.KEY_WOW64_64KEY,
         ),
     ]
     for key_path, view in paths:
@@ -28,10 +23,12 @@ def _registry_candidates():
                 winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ | view
             ) as key:
                 location, _ = winreg.QueryValueEx(key, "InstallLocation")
-                if location:
-                    yield Path(location)
         except OSError:
             continue
+        if isinstance(location, str):
+            location = location.strip().strip('"')
+            if location:
+                yield Path(location)
 
 
 def is_install_root(path):

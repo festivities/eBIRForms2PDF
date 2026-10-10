@@ -148,3 +148,18 @@ limitation unless trivial.
 - 2026-10-10: GUI hides encrypted final copies by default behind an opt-in "Show encrypted"
   checkbox (status line reports hidden count); encrypted rows selected with the box on still
   SKIP cleanly. 34/34 tests, ruff clean; committed `d4d782a`, pushed.
+- 2026-10-11: Full audit (3 Haiku subagents, findings verified by main agent; 2 claims rejected:
+  un-prefixed `txtMaxPage` — real drafts use `frm<code>:txtMaxPage`; hyphenated-code misparse —
+  `BIR-Form2550DS-old` saves as `-2550DS-`, so old-template 2550DS drafts render with the current
+  template, documented as a limitation). Fixes delegated to 3 Haiku subagents by file ownership,
+  diffs reviewed by main agent. Key changes: draft values reach the page via `add_init_script`
+  (never written to disk; `ebirOnline*` keys dropped); `RenderResult.warnings` (fill errors,
+  unmatched `frm*` ids, page-count mismatch) shown by CLI/GUI via shared `render.export_many`
+  (also de-dupes same-name outputs with `-2`); calibration stops when a retry doesn't cut pages;
+  extraction cache trusted only with `.complete` marker; `_safe_dest` rejects anchored paths;
+  encrypted detection = non-empty non-`<?xml` file (entropy check removed); CLI exit codes
+  0/1/2, EOF at picker cancels, Ctrl+C → 130, invalid picks re-prompt; GUI uses typed folder,
+  loads off the UI thread, close guard; `.gitignore` blocks PDFs/drafts. Verified: 92/92 tests
+  (`python -m unittest discover -s tests`; pytest not installed), ruff clean, real draft
+  exported to scratch (A4 2pp 0.832, legal 2pp 0.856, no warnings; PDFs deleted after).
+  Uncommitted.

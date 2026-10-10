@@ -1,14 +1,18 @@
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 
-from ebirforms2pdf.finder import parse_filename, scan, shannon_entropy
+from ebirforms2pdf.finder import looks_encrypted, looks_like_draft, parse_filename, scan
 
 DRAFT_BODY = (
     "<?xml version='1.0'?>"
     "<div>frm1701q:txtYear=2026 frm1701q:txtYear=</div>"
     "<div>txtFinalFlag=false txtFinalFlag=</div>"
 )
+PLAIN_NON_DRAFT = "<?xml version='1.0'?><p>not a draft</p>"
+BLOB = bytes(range(256)) * 8
+COPY_NAME = "123456789-1701Qv2018-2026Q3#user@example.com#.xml"
 
 
 class TestParseFilename(unittest.TestCase):
@@ -43,6 +47,48 @@ class TestParseFilename(unittest.TestCase):
         self.assertIsNone(parse_filename("short-1-2.xml"))
         self.assertIsNone(parse_filename("12345678-0605-2026.xml"))
 
+    def test_tin_must_be_ascii_decimal(self):
+        for tin in ("١" * 9, "¹" * 9):
+            with self.subTest(tin=tin):
+                self.assertIsNone(parse_filename(f"{tin}-0605-2026.xml"))
+
+
+class TestLooksLike(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, data):
+        path = self.dir / "f.xml"
+        path.write_bytes(data)
+        return path
+
+    def test_bom_draft_accepted(self):
+        path = self._write(b"\xef\xbb\xbf" + DRAFT_BODY.encode("utf-8"))
+        self.assertTrue(looks_like_draft(path))
+        self.assertFalse(looks_encrypted(path))
+
+    def test_plain_non_draft_not_encrypted(self):
+        path = self._write(PLAIN_NON_DRAFT.encode("utf-8"))
+        self.assertFalse(looks_like_draft(path))
+        self.assertFalse(looks_encrypted(path))
+
+    def test_bom_plain_non_draft_not_encrypted(self):
+        path = self._write(b"\xef\xbb\xbf" + PLAIN_NON_DRAFT.encode("utf-8"))
+        self.assertFalse(looks_encrypted(path))
+
+    def test_blob_is_encrypted(self):
+        self.assertTrue(looks_encrypted(self._write(BLOB)))
+
+    def test_base64_armour_is_encrypted(self):
+        self.assertTrue(looks_encrypted(self._write(base64.b64encode(BLOB))))
+
+    def test_empty_not_encrypted(self):
+        self.assertFalse(looks_encrypted(self._write(b"")))
+
 
 class TestScan(unittest.TestCase):
     def setUp(self):
@@ -55,13 +101,10 @@ class TestScan(unittest.TestCase):
             DRAFT_BODY, encoding="utf-8"
         )
         (savefile / "readme.txt").write_text("notes", encoding="utf-8")
-        (savefile / "123456789-0619E-122025.xml").write_text(
-            "<?xml version='1.0'?><p>not a draft</p>", encoding="utf-8"
-        )
+        (savefile / "123456789-0619E-122025.xml").write_text(PLAIN_NON_DRAFT, encoding="utf-8")
         iaf = self.root / "IAF_RDO_Copy"
         iaf.mkdir()
-        blob = bytes(range(256)) * 8
-        (iaf / "123456789-1701Qv2018-2026Q3#user@example.com#.xml").write_bytes(blob)
+        (iaf / COPY_NAME).write_bytes(BLOB)
         empty_dir = self.root / "IAF_RDO_Archive"
         empty_dir.mkdir()
 
@@ -88,12 +131,16 @@ class TestScan(unittest.TestCase):
         self.assertEqual(encrypted[0].form_code, "1701Qv2018")
         self.assertEqual(encrypted[0].period, "2026Q3")
 
-    def test_high_entropy_blob_detected(self):
-        blob = bytes((i * 37 + 11) % 256 for i in range(512))
-        self.assertGreater(shannon_entropy(blob), 6.0)
+    def test_plain_non_draft_in_copy_dir_skipped(self):
+        name = "123456789-0619E-122025#user@example.com#.xml"
+        (self.root / "IAF_RDO_Copy" / name).write_text(PLAIN_NON_DRAFT, encoding="utf-8")
+        self.assertNotIn(name, [e.filename for e in scan(self.root)])
 
-    def test_plain_xml_low_entropy(self):
-        self.assertLess(shannon_entropy(DRAFT_BODY.encode("utf-8")[:512]), 6.0)
+    def test_base64_copy_flagged_encrypted(self):
+        name = "123456789-0619E-122025#user@example.com#.xml"
+        (self.root / "IAF_RDO_Copy" / name).write_bytes(base64.b64encode(BLOB))
+        entry = next(e for e in scan(self.root) if e.filename == name)
+        self.assertTrue(entry.encrypted)
 
     def test_empty_encrypted_dir_no_crash(self):
         entries = scan(self.root)

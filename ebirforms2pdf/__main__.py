@@ -2,13 +2,14 @@
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
 from .extract import ExtractError, extract_templates
-from .finder import FormEntry, looks_like_draft, parse_filename, scan
+from .finder import FormEntry, looks_encrypted, looks_like_draft, parse_filename, scan
 from .locator import find_install_root
-from .render import export_pdf, output_pdf_name
+from .render import export_many
 
 
 def _parse_args(argv):
@@ -41,8 +42,6 @@ def _format_size(size):
 
 
 def _format_time(mtime):
-    import time
-
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
 
 
@@ -57,24 +56,29 @@ def _print_table(entries):
         )
 
 
+def _number(text):
+    if text.isascii() and text.isdecimal() and len(text) <= 9:
+        return int(text)
+    return None
+
+
 def _parse_selection(text, count):
-    stripped = text.strip().lower()
-    if stripped in ("all", "a"):
-        return list(range(count))
-    picked = set()
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
+    """Return (sorted zero-based indexes, invalid tokens); 'all' or 'a' selects everything."""
+    if text.strip().lower() in ("all", "a"):
+        return list(range(count)), []
+    picked, invalid = set(), []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
             continue
-        if "-" in part:
-            low, _, high = part.partition("-")
-            if low.strip().isdigit() and high.strip().isdigit():
-                for i in range(int(low), int(high) + 1):
-                    if 1 <= i <= count:
-                        picked.add(i - 1)
-        elif part.isdigit() and 1 <= int(part) <= count:
-            picked.add(int(part) - 1)
-    return sorted(picked)
+        low_text, dash, high_text = token.partition("-")
+        low = _number(low_text.strip())
+        high = _number(high_text.strip()) if dash else low
+        if low is None or high is None or min(low, high) < 1 or max(low, high) > count:
+            invalid.append(token)
+            continue
+        picked.update(range(min(low, high) - 1, max(low, high)))
+    return sorted(picked), invalid
 
 
 def _entry_from_path(path):
@@ -84,7 +88,7 @@ def _entry_from_path(path):
         path=path,
         form_code=parsed[1] if parsed else "",
         period=parsed[2] if parsed else "",
-        encrypted=False,
+        encrypted=looks_encrypted(path),
         size=stat.st_size,
         mtime=stat.st_mtime,
         filename=path.name,
@@ -101,28 +105,38 @@ def _prompt(message, default):
     return answer or default
 
 
-def _do_exports(entries, out_dir, named_dir, paper):
-    successes = 0
-    for entry in entries:
-        target = out_dir / output_pdf_name(entry.filename, paper)
-        if entry.encrypted:
-            print(f"SKIP {entry.filename}: not exportable (encrypted final copy)")
-            continue
+def _pick(entries):
+    """Ask for forms (3 tries). Returns the chosen entries, or None when cancelled or invalid."""
+    for _ in range(3):
         try:
-            result = export_pdf(entry, entry.path, named_dir, target, paper)
-        except Exception as exc:
-            print(f"ERROR {entry.filename}: {exc}")
-            continue
-        pages = result.pages if result.pages > 0 else "?"
-        print(
-            f"OK {entry.filename} -> {target} ({result.paper}, {pages} pages,"
-            f" scale {result.scale:.3f})"
-        )
-        successes += 1
-    return successes
+            answer = input("Select forms (e.g. 1,3-5 or all) [all]: ").strip() or "all"
+        except EOFError:
+            print("cancelled")
+            return None
+        chosen, invalid = _parse_selection(answer, len(entries))
+        if not invalid:
+            if not chosen:
+                print("nothing selected")
+                return None
+            return [entries[i] for i in chosen]
+        print(f"invalid selection: {', '.join(invalid)} (use 1-{len(entries)}, ranges, or all)")
+    print("too many invalid selections")
+    return None
 
 
-def main(argv=None):
+def _do_exports(entries, out_dir, named_dir, paper):
+    """Print each export result. Returns (succeeded, failed) counts; skips are neither."""
+    succeeded = failed = 0
+    for status, line in export_many(entries, out_dir, named_dir, paper):
+        print(line)
+        if status == "OK":
+            succeeded += 1
+        elif status == "ERROR":
+            failed += 1
+    return succeeded, failed
+
+
+def _main(argv):
     args = _parse_args(argv)
     if args.version:
         print(f"ebirforms2pdf {__version__}")
@@ -137,18 +151,21 @@ def main(argv=None):
         print("Pass --root PATH pointing at the eBIRForms install folder")
         return 1
     print(f"install: {root}")
+    failed = 0
     if args.drafts:
+        if args.all:
+            print("note: --all is ignored when draft paths are given")
         entries = []
         for raw in args.drafts:
             path = Path(raw)
             if not path.is_file():
-                print(f"ERROR: draft file not found: {path}")
-                return 1
-            entry = _entry_from_path(path)
-            if not entry.encrypted and not looks_like_draft(path):
-                print(f"ERROR: not an eBIRForms draft: {path}")
-                return 1
-            entries.append(entry)
+                print(f"ERROR {path}: file not found")
+                failed += 1
+            elif not looks_encrypted(path) and not looks_like_draft(path):
+                print(f"ERROR {path}: not an eBIRForms draft")
+                failed += 1
+            else:
+                entries.append(_entry_from_path(path))
     else:
         entries = scan(root)
     if args.list:
@@ -156,10 +173,10 @@ def main(argv=None):
             _print_table(entries)
         else:
             print("no saved drafts found")
-        return 0
+        return 1 if failed else 0
     if not entries:
         print("no saved drafts found; nothing to export")
-        return 0
+        return 1 if failed else 0
     try:
         named_dir = extract_templates(root / "BIRForms.exe", args.cache)
     except ExtractError as exc:
@@ -169,12 +186,10 @@ def main(argv=None):
     interactive = not args.all and not args.drafts
     if interactive:
         _print_table(entries)
-        selection = _prompt("Select forms (e.g. 1,3-5 or all)", "all")
-        chosen = _parse_selection(selection, len(entries))
-        if not chosen:
-            print("nothing selected")
+        picked = _pick(entries)
+        if picked is None:
             return 1
-        entries = [entries[i] for i in chosen]
+        entries = picked
     if args.paper:
         paper = args.paper
     elif interactive:
@@ -190,12 +205,28 @@ def main(argv=None):
         out_dir = Path(_prompt("Output directory", str(Path.cwd())))
     else:
         out_dir = Path.cwd()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    successes = _do_exports(entries, out_dir, named_dir, paper)
-    if successes > 0:
-        return 0
-    print("no exports succeeded")
-    return 1
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"ERROR: cannot create output folder {out_dir}: {exc}")
+        return 1
+    succeeded, export_failures = _do_exports(entries, out_dir, named_dir, paper)
+    failed += export_failures
+    if succeeded == 0:
+        print("no exports succeeded")
+        return 1
+    if failed:
+        print(f"{failed} failed, {succeeded} exported")
+        return 2
+    return 0
+
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("\ncancelled")
+        return 130
 
 
 if __name__ == "__main__":

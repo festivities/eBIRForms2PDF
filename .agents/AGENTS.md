@@ -137,3 +137,6 @@ limitation unless trivial.
   `eBIRForms2PDF.exe` confirmed live with main window "eBIRForms2PDF 0.1.0" via tasklist +
   MainWindowTitle check. README gained Desktop-app/exe section; `ebirforms2pdf-gui` entry added.
   Privacy: new files contain no personal data (synthetic fixtures only).
+- 2026-10-10: GUI hides encrypted final copies by default behind an opt-in "Show encrypted"
+  checkbox (status line reports hidden count); encrypted rows selected with the box on still
+  SKIP cleanly. 34/34 tests, ruff clean; committed `d4d782a`, pushed.
